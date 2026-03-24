@@ -27,3 +27,6 @@ config.local.yaml
 
 # Environment secrets
 .env
+
+# SQLite databases / runtime data
+data/
