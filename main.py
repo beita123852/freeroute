@@ -14,6 +14,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from typing import Optional
 from providers.manager import ProviderManager
 from utils.quota_tracker import QuotaTracker
 from utils.health_checker import HealthChecker
@@ -32,13 +33,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # API Key Authentication
 # ---------------------------------------------------------------------------
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
-async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+async def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)):
     api_key = os.environ.get("FREEROUTE_API_KEY", "")
     if not api_key:
-        return  # 如果没配置key则跳过认证
-    if credentials.credentials != api_key:
+        return  # 未配置key则跳过认证
+    if credentials is None or credentials.credentials != api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 # ---------------------------------------------------------------------------
@@ -172,14 +173,17 @@ async def chat_completions(request: Request, _ = Security(verify_token)):
                 content={"error": {"message": f"message content at index {i} exceeds 100KB limit", "type": "invalid_request"}},
             )
 
+    # Build kwargs from body, excluding model and messages
+    extra_kwargs = {k: v for k, v in body.items() if k not in ("model", "messages")}
+
     if stream:
         return StreamingResponse(
-            router.route_stream(model, messages, **body),
+            router.route_stream(model, messages, **extra_kwargs),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     else:
-        result = router.route_request(model, messages, **body)
+        result = router.route_request(model, messages, **extra_kwargs)
         if result["success"]:
             return JSONResponse(content=result["data"])
         else:
