@@ -1,0 +1,50 @@
+server:
+  host: "0.0.0.0"
+  port: 8090
+
+providers:
+  - name: nim
+    type: openai
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: "${NIM_API_KEY}"
+    priority: 1
+    models:
+      - deepseek-ai/deepseek-v3.1
+      - meta/llama-3.3-70b-instruct
+      - qwen/qwq-32b
+    free_quota:
+      type: "daily"  # daily reset
+      limit: 1000
+
+  - name: openrouter_free
+    type: openai
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: "${OPENROUTER_API_KEY}"
+    priority: 2
+    models:
+      - z-ai/glm-4.5-air:free
+    free_quota:
+      type: "monthly"
+      limit: 1000000
+
+  - name: ollama_cloud
+    type: openai
+    base_url: "https://api.ollama.com/v1"
+    api_key: "${OLLAMA_CLOUD_API_KEY}"
+    priority: 3
+    models:
+      - minimax/minimax-m2.5
+      - moonshotai/kimi-k2.5
+    free_quota:
+      type: "daily"
+      limit: 500
+
+routing:
+  strategy: "priority_fallback"  # 按优先级，失败才切下一个
+  health_check:
+    enabled: true
+    interval: 60  # 秒
+    timeout: 10   # 秒
+
+logging:
+  level: "INFO"
