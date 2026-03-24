@@ -183,7 +183,7 @@ async def chat_completions(request: Request, _ = Security(verify_token)):
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
     else:
-        result = router.route_request(model, messages, **extra_kwargs)
+        result = await router.route_request(model, messages, **extra_kwargs)
         if result["success"]:
             return JSONResponse(content=result["data"])
         else:

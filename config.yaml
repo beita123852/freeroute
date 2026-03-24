@@ -39,8 +39,77 @@ providers:
       type: "daily"
       limit: 500
 
+  - name: groq
+    type: openai
+    base_url: "https://api.groq.com/openai/v1"
+    api_key: "${GROQ_API_KEY}"
+    priority: 4
+    models:
+      - llama-3.3-70b-versatile
+      - llama-3.1-8b-instant
+      - mixtral-8x7b-32768
+      - gemma2-9b-it
+    free_quota:
+      type: "daily"
+      limit: 1000
+
+  - name: cerebras
+    type: openai
+    base_url: "https://api.cerebras.ai/v1"
+    api_key: "${CEREBRAS_API_KEY}"
+    priority: 5
+    models:
+      - gpt-oss-120b
+      - llama-4-maverick-17b-128e-instruct
+      - llama-4-scout-17b-16e-instruct
+      - qwen3-235b-2507
+    free_quota:
+      type: "daily"
+      limit: 1000000
+
+  - name: gemini
+    type: openai
+    base_url: "https://generativelanguage.googleapis.com/v1beta/"
+    api_key: "${GEMINI_API_KEY}"
+    priority: 6
+    models:
+      - gemini-2.5-flash
+      - gemini-2.5-pro
+    free_quota:
+      type: "daily"
+      limit: 500
+
+  - name: mistral
+    type: openai
+    base_url: "https://api.mistral.ai/v1"
+    api_key: "${MISTRAL_API_KEY}"
+    priority: 7
+    models:
+      - mistral-large-latest
+      - mistral-small-latest
+      - codestral-latest
+    free_quota:
+      type: "monthly"
+      limit: 1000000
+
+  - name: fireworks
+    type: openai
+    base_url: "https://api.fireworks.ai/inference/v1"
+    api_key: "${FIREWORKS_API_KEY}"
+    priority: 8
+    models:
+      - accounts/fireworks/models/llama-v3p3-70b-instruct
+      - accounts/fireworks/models/llama-v3p1-8b-instruct
+    free_quota:
+      type: "daily"
+      limit: 500
+
 routing:
   strategy: "priority_fallback"  # 按优先级，失败才切下一个
+  retry:
+    max_attempts: 3
+    backoff_base: 1
+    retryable_errors: ["timeout", "5xx"]
   health_check:
     enabled: true
     interval: 60  # 秒
