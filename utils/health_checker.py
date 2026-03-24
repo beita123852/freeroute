@@ -15,7 +15,7 @@ class HealthChecker:
         self.latencies: Dict[str, float] = {}  # provider_name -> latency_ms
         self.last_check: Dict[str, float] = {}  # provider_name -> last_check_time
 
-    async def check_provider_health(self, provider_name: str, base_url: str, api_key: str) -> bool:
+    async def check_provider_health(self, provider_name: str, base_url: str, api_key: str, provider_models: list) -> bool:
         """Check if a provider is healthy by sending a lightweight test request"""
         try:
             start_time = time.time()
@@ -41,8 +41,10 @@ class HealthChecker:
                         return True
                     
                 # If models endpoint fails, try a simple chat completion
+                # Use the first available model from the provider
+                test_model = provider_models[0] if provider_models else "gpt-3.5-turbo"
                 payload = {
-                    "model": "gpt-3.5-turbo",
+                    "model": test_model,
                     "messages": [{"role": "user", "content": "ping"}],
                     "max_tokens": 5
                 }

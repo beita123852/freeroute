@@ -24,3 +24,6 @@ logs/
 
 # Config overrides (keep default, ignore local overrides)
 config.local.yaml
+
+# Environment secrets
+.env

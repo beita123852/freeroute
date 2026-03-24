@@ -8,8 +8,11 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Security, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from providers.manager import ProviderManager
 from utils.quota_tracker import QuotaTracker
@@ -24,7 +27,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("freegate")
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# API Key Authentication
+# ---------------------------------------------------------------------------
+security = HTTPBearer()
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
+    api_key = os.environ.get("FREEROUTE_API_KEY", "")
+    if not api_key:
+        return  # 如果没配置key则跳过认证
+    if credentials.credentials != api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -82,6 +97,7 @@ async def health_check_loop():
                     provider["name"],
                     provider["base_url"],
                     provider["api_key"],
+                    provider["models"],
                 )
                 if healthy:
                     pm.mark_healthy(provider["name"])
@@ -104,21 +120,57 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # FastAPI App
 # ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="FreeRoute", version="0.1.0", lifespan=lifespan)
+app.state.limiter = limiter
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+@limiter.limit("20/minute")
+async def chat_completions(request: Request, _ = Security(verify_token)):
     body = await request.json()
     model = body.get("model", "")
     messages = body.get("messages", [])
     stream = body.get("stream", False)
 
-    if not model or not messages:
+    # Input validation
+    if not model:
         return JSONResponse(
             status_code=400,
-            content={"error": {"message": "model and messages are required", "type": "invalid_request"}},
+            content={"error": {"message": "model is required", "type": "invalid_request"}},
         )
+    
+    if not messages:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "messages array cannot be empty", "type": "invalid_request"}},
+        )
+    
+    if len(messages) > 100:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "messages array cannot exceed 100 items", "type": "invalid_request"}},
+        )
+    
+    for i, message in enumerate(messages):
+        if not isinstance(message, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": f"message at index {i} must be an object", "type": "invalid_request"}},
+            )
+        
+        if "role" not in message or "content" not in message:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": f"message at index {i} must have role and content fields", "type": "invalid_request"}},
+            )
+        
+        content = message.get("content", "")
+        if isinstance(content, str) and len(content.encode('utf-8')) > 100 * 1024:  # 100KB
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": f"message content at index {i} exceeds 100KB limit", "type": "invalid_request"}},
+            )
 
     if stream:
         return StreamingResponse(
@@ -136,7 +188,8 @@ async def chat_completions(request: Request):
 
 
 @app.get("/v1/models")
-async def list_models():
+@limiter.limit("20/minute")
+async def list_models(request: Request, _ = Security(verify_token)):
     models = pm.get_all_models()
     return {
         "object": "list",
