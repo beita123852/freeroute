@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, Security, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -21,6 +21,7 @@ from utils.quota_tracker import QuotaTracker
 from utils.health_checker import HealthChecker
 from utils.cache import CacheManager
 from utils.request_logger import RequestLogger
+from utils.auto_discover import AutoDiscovery
 from router import Router
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,25 @@ start_time = time.time()
 total_requests = 0
 
 # ---------------------------------------------------------------------------
+# Background tasks
+# ---------------------------------------------------------------------------
+quota_monitor_task = None
+
+async def quota_monitor_loop():
+    """Monitor and log quota resets"""
+    while True:
+        try:
+            status = qt.get_status()
+            for provider, quotas in status.items():
+                daily = quotas.get("daily", 0)
+                monthly = quotas.get("monthly", 0)
+                if daily > 0 or monthly > 0:
+                    logger.debug(f"Quota status: {provider} daily={daily} monthly={monthly}")
+        except Exception as e:
+            logger.error(f"Quota monitor error: {e}")
+        await asyncio.sleep(300)  # 每5分钟检查一次
+
+# ---------------------------------------------------------------------------
 # Init components
 # ---------------------------------------------------------------------------
 pm = ProviderManager(config)
@@ -95,6 +115,9 @@ cache_manager = CacheManager(cache_config)
 
 # Initialize request logger
 request_logger = RequestLogger()
+
+# Initialize auto discovery
+auto_discovery = AutoDiscovery(pm, config)
 
 router = Router(pm, qt, hc, config, cache_manager)
 
@@ -125,15 +148,27 @@ async def health_check_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global health_check_task
+    global health_check_task, quota_monitor_task
     await hc.start()
     logger.info("HealthChecker session initialized")
     if hc_config.get("enabled", True):
         health_check_task = asyncio.create_task(health_check_loop())
         logger.info("Health checker started")
+    
+    # Start quota monitor
+    quota_monitor_task = asyncio.create_task(quota_monitor_loop())
+    logger.info("Quota monitor started")
+    
+    # Start auto discovery
+    await auto_discovery.start()
+    
     yield
+    
     if health_check_task:
         health_check_task.cancel()
+    if quota_monitor_task:
+        quota_monitor_task.cancel()
+    await auto_discovery.stop()
     await hc.close()
     logger.info("HealthChecker session closed")
 
@@ -474,6 +509,39 @@ async def get_model_stats(hours: int = 24):
     """Get request statistics by model"""
     stats = request_logger.get_model_stats(hours)
     return stats
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    lines = []
+    
+    # Provider health
+    for name, info in hc.get_status().items():
+        healthy = 1 if info.get("healthy") else 0
+        lines.append(f'freeroute_provider_healthy{{provider="{name}"}} {healthy}')
+        latency = info.get("latency_ms")
+        if latency is not None:
+            lines.append(f'freeroute_provider_latency_ms{{provider="{name}"}} {latency:.2f}')
+    
+    # Quota usage
+    for provider, quotas in qt.get_status().items():
+        for qtype, usage in quotas.items():
+            lines.append(f'freeroute_quota_usage{{provider="{provider}",type="{qtype}"}} {usage}')
+    
+    # Cache stats
+    cs = cache_manager.stats()
+    if cs.get("enabled"):
+        lines.append(f'freeroute_cache_hit_total {cs["hit_count"]}')
+        lines.append(f'freeroute_cache_miss_total {cs["miss_count"]}')
+        lines.append(f'freeroute_cache_entries {cs["total_entries"]}')
+        lines.append(f'freeroute_cache_saved_tokens {cs["total_saved_tokens"]}')
+    
+    # Request total and uptime
+    lines.append(f'freeroute_requests_total {total_requests}')
+    lines.append(f'freeroute_uptime_seconds {time.time() - start_time:.0f}')
+    
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain")
 
 
 # ---------------------------------------------------------------------------
