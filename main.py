@@ -20,6 +20,7 @@ from providers.manager import ProviderManager
 from utils.quota_tracker import QuotaTracker
 from utils.health_checker import HealthChecker
 from utils.cache import CacheManager
+from utils.request_logger import RequestLogger
 from router import Router
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,9 @@ hc = HealthChecker(
 # Initialize cache
 cache_config = config.get("cache", {})
 cache_manager = CacheManager(cache_config)
+
+# Initialize request logger
+request_logger = RequestLogger()
 
 router = Router(pm, qt, hc, config, cache_manager)
 
