@@ -302,7 +302,7 @@ class Router:
         attempt = 0
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            # Get available providers (healthy and with quota)
+            # Get available providers (healthy, with quota, and not circuit broken)
             available_providers = []
             for provider in providers:
                 # Skip unhealthy
@@ -316,6 +316,10 @@ class Router:
                     if limit > 0 and not self.qt.can_use(provider["name"], qtype, limit):
                         logger.info(f"SKIP provider={provider['name']} reason=quota_exhausted")
                         continue
+                # Skip circuit broken providers
+                if hasattr(self.pm, 'circuit_breaker') and not self.pm.circuit_breaker.can_use(provider["name"]):
+                    logger.info(f"SKIP provider={provider['name']} reason=circuit_open")
+                    continue
                 available_providers.append(provider)
 
             if not available_providers:
@@ -342,6 +346,9 @@ class Router:
                         if cache_key:
                             self.cache_manager.set(cache_key, result["data"])
                             logger.info(f"CACHE SET model={model} key={cache_key[:8]}...")
+                    # Record circuit breaker success
+                    if hasattr(self.pm, 'circuit_breaker'):
+                        self.pm.circuit_breaker.record_success(provider["name"])
                     return result
 
                 last_error = result
@@ -383,7 +390,7 @@ class Router:
         )
 
     async def route_stream(self, model: str, messages: list, **kwargs) -> AsyncGenerator[str, None]:
-        """Route a streaming request through available providers (async)"""
+        """Route streaming request with cross-provider fallback"""
         providers = self.pm.get_providers_for_model(model)
         if not providers:
             yield f"data: {json.dumps({'error': f'Model {model} not found'})}\n\n"
@@ -396,6 +403,9 @@ class Router:
             for provider in providers:
                 if not provider["healthy"]:
                     continue
+                # 检查熔断器（如果已实现）
+                if hasattr(self.pm, 'circuit_breaker') and not self.pm.circuit_breaker.can_use(provider["name"]):
+                    continue
                 quota = provider.get("free_quota", {})
                 if quota:
                     qtype = quota.get("type", "daily")
@@ -405,43 +415,48 @@ class Router:
                 available_providers.append(provider)
 
             if not available_providers:
-                yield f"data: {json.dumps({'error': f'No available providers for model {model}'})}\n\n"
+                yield f"data: {json.dumps({'error': 'No available providers for streaming'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
-            # Use strategy to select provider
-            try:
-                provider = self.strategy.select_provider(model, available_providers)
-            except Exception as e:
-                logger.error(f"Strategy selection failed: {e}, falling back to priority")
-                # Fallback to priority order
-                available_providers.sort(key=lambda p: p["priority"])
-                provider = available_providers[0]
-
             kwargs["stream"] = True
-            payload = self._build_request(provider, model, messages, **kwargs)
+            
+            # 外层循环：跨 provider fallback
+            used_providers = set()
+            for provider in available_providers:
+                if provider["name"] in used_providers:
+                    continue
+                used_providers.add(provider["name"])
+                
+                payload = self._build_request(provider, model, messages, **kwargs)
+                
+                # 内层循环：同一 provider 重试
+                for attempt in range(1, self.retry_max_attempts + 1):
+                    try:
+                        async for chunk in self._forward_stream(client, provider, payload):
+                            yield chunk
+                        logger.info(f"STREAM OK provider={provider['name']}")
+                        # 成功：记录熔断器成功
+                        if hasattr(self.pm, 'circuit_breaker'):
+                            self.pm.circuit_breaker.record_success(provider["name"])
+                        return
+                    except Exception as e:
+                        logger.warning(f"STREAM FAIL provider={provider['name']} attempt={attempt}/{self.retry_max_attempts} error={e}")
+                        if attempt < self.retry_max_attempts:
+                            backoff = self.retry_backoff_base * (2 ** (attempt - 1))
+                            await asyncio.sleep(backoff)
+                        else:
+                            # 该 provider 彻底失败
+                            self.pm.mark_unhealthy(provider["name"])
+                            if hasattr(self.pm, 'circuit_breaker'):
+                                self.pm.circuit_breaker.record_failure(provider["name"])
+                            break  # 跳到下一个 provider
+                
+                logger.info(f"STREAM FALLBACK trying next provider...")
 
-            # Retry loop for streaming
-            for attempt in range(1, self.retry_max_attempts + 1):
-                try:
-                    async for chunk in self._forward_stream(client, provider, payload):
-                        yield chunk
-                    logger.info(f"STREAM OK provider={provider['name']}")
-                    return
-                except Exception as e:
-                    logger.warning(
-                        f"STREAM FAIL provider={provider['name']} attempt={attempt}/{self.retry_max_attempts} error={e}"
-                    )
-                    if attempt < self.retry_max_attempts:
-                        backoff = self.retry_backoff_base * (2 ** (attempt - 1))
-                        logger.info(f"STREAM RETRY backoff={backoff}s")
-                        await asyncio.sleep(backoff)
-                    else:
-                        self.pm.mark_unhealthy(provider["name"])
-                        break
-
-        yield f"data: {json.dumps({'error': 'All providers failed for streaming'})}\n\n"
-        yield "data: [DONE]\n\n"
+            # 所有 provider 都失败
+            yield f"data: {json.dumps({'error': 'All providers failed for streaming'})}\n\n"
+            yield "data: [DONE]\n\n"
 
     def _error_response(self, message: str) -> dict:
         """Return standard OpenAI-format error"""
