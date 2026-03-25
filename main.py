@@ -126,12 +126,16 @@ async def health_check_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global health_check_task
+    await hc.start()
+    logger.info("HealthChecker session initialized")
     if hc_config.get("enabled", True):
         health_check_task = asyncio.create_task(health_check_loop())
         logger.info("Health checker started")
     yield
     if health_check_task:
         health_check_task.cancel()
+    await hc.close()
+    logger.info("HealthChecker session closed")
 
 # ---------------------------------------------------------------------------
 # FastAPI App

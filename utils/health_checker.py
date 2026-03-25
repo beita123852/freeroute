@@ -14,23 +14,41 @@ class HealthChecker:
         self.health_status: Dict[str, bool] = {}  # provider_name -> is_healthy
         self.latencies: Dict[str, float] = {}  # provider_name -> latency_ms
         self.last_check: Dict[str, float] = {}  # provider_name -> last_check_time
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def start(self):
+        """Initialize persistent ClientSession"""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+
+    async def close(self):
+        """Close persistent ClientSession"""
+        if self._session:
+            await self._session.close()
+            self._session = None
 
     async def check_provider_health(self, provider_name: str, base_url: str, api_key: str, provider_models: list) -> bool:
-        """Check if a provider is healthy by sending a lightweight test request"""
+        """Check if a provider is healthy via lightweight /models endpoint"""
         try:
             start_time = time.time()
-            
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                # Try to get models list first
+
+            # Use persistent session if available, otherwise create temporary one
+            session = self._session
+            temp_session = None
+            if session is None:
+                temp_session = aiohttp.ClientSession()
+                session = temp_session
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            try:
                 async with session.get(
-                    f"{base_url}/models", 
-                    headers=headers, 
-                    timeout=self.timeout
+                    f"{base_url}/models",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout)
                 ) as response:
                     if response.status == 200:
                         latency = (time.time() - start_time) * 1000
@@ -39,30 +57,15 @@ class HealthChecker:
                         self.last_check[provider_name] = time.time()
                         logger.info(f"Health check passed for {provider_name}, latency: {latency:.2f}ms")
                         return True
-                    
-                # If models endpoint fails, try a simple chat completion
-                # Use the first available model from the provider
-                test_model = provider_models[0] if provider_models else "gpt-3.5-turbo"
-                payload = {
-                    "model": test_model,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 5
-                }
-                
-                async with session.post(
-                    f"{base_url}/chat/completions", 
-                    headers=headers, 
-                    json=payload,
-                    timeout=self.timeout
-                ) as response:
-                    if response.status == 200:
-                        latency = (time.time() - start_time) * 1000
-                        self.latencies[provider_name] = latency
-                        self.health_status[provider_name] = True
+                    else:
+                        self.health_status[provider_name] = False
                         self.last_check[provider_name] = time.time()
-                        logger.info(f"Health check passed for {provider_name}, latency: {latency:.2f}ms")
-                        return True
-        
+                        logger.warning(f"Health check failed for {provider_name}: HTTP {response.status}")
+                        return False
+            finally:
+                if temp_session:
+                    await temp_session.close()
+
         except (aiohttp.ClientError, asyncio.TimeoutError, Exception) as e:
             logger.warning(f"Health check failed for {provider_name}: {e}")
             self.health_status[provider_name] = False
