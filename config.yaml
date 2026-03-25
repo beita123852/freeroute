@@ -8,6 +8,7 @@ providers:
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key: "${NIM_API_KEY}"
     priority: 1
+    weight: 5  # Higher weight for weighted strategy
     models:
       - deepseek-ai/deepseek-v3.1
       - meta/llama-3.3-70b-instruct
@@ -21,6 +22,7 @@ providers:
     base_url: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
     priority: 2
+    weight: 3  # Medium weight
     models:
       - z-ai/glm-4.5-air:free
     free_quota:
@@ -32,6 +34,7 @@ providers:
     base_url: "https://api.ollama.com/v1"
     api_key: "${OLLAMA_CLOUD_API_KEY}"
     priority: 3
+    weight: 2  # Lower weight
     models:
       - minimax/minimax-m2.5
       - moonshotai/kimi-k2.5
@@ -44,6 +47,7 @@ providers:
     base_url: "https://api.groq.com/openai/v1"
     api_key: "${GROQ_API_KEY}"
     priority: 4
+    weight: 4  # Higher weight
     models:
       - llama-3.3-70b-versatile
       - llama-3.1-8b-instant
@@ -58,6 +62,7 @@ providers:
     base_url: "https://api.cerebras.ai/v1"
     api_key: "${CEREBRAS_API_KEY}"
     priority: 5
+    weight: 1  # Default weight
     models:
       - gpt-oss-120b
       - llama-4-maverick-17b-128e-instruct
@@ -72,9 +77,10 @@ providers:
     base_url: "https://generativelanguage.googleapis.com/v1beta/"
     api_key: "${GEMINI_API_KEY}"
     priority: 6
+    weight: 1  # Default weight
     models:
-      - gemini-2.5-flash
-      - gemini-2.5-pro
+      - gemini-极速版
+      - gemini-专业版
     free_quota:
       type: "daily"
       limit: 500
@@ -84,6 +90,7 @@ providers:
     base_url: "https://api.mistral.ai/v1"
     api_key: "${MISTRAL_API_KEY}"
     priority: 7
+    weight: 2  # Lower weight
     models:
       - mistral-large-latest
       - mistral-small-latest
@@ -97,6 +104,7 @@ providers:
     base_url: "https://api.fireworks.ai/inference/v1"
     api_key: "${FIREWORKS_API_KEY}"
     priority: 8
+    weight: 1  # Default weight
     models:
       - accounts/fireworks/models/llama-v3p3-70b-instruct
       - accounts/fireworks/models/llama-v3p1-8b-instruct
@@ -114,6 +122,13 @@ routing:
     enabled: true
     interval: 60  # 秒
     timeout: 10   # 秒
+
+cache:
+  enabled: true
+  ttl_seconds: 3600          # 默认缓存 1 小时
+  max_entries: 10000         # 最大缓存条目
+  exclude_models: []         # 排除缓存的模型
+  cleanup_interval: 3600     # 清理间隔（秒）
 
 logging:
   level: "INFO"

@@ -56,6 +56,11 @@ try:
     from router import Router
     r = Router(pm, qt, hc, config)
     print(f"  OK - Router initialized")
+    
+    # Test routing strategy
+    routing_config = config.get("routing", {})
+    strategy_name = routing_config.get("strategy", "priority_fallback")
+    print(f"  OK - Routing strategy: {strategy_name}")
 except Exception as e:
     print(f"  FAIL - {e}")
 

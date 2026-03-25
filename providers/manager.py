@@ -29,12 +29,13 @@ class ProviderManager:
                 "base_url": p["base_url"],
                 "api_key": self._resolve_env_vars(p.get("api_key", "")),
                 "priority": p.get("priority", 99),
+                "weight": p.get("weight", 1),  # Default weight=1
                 "models": p.get("models", []),
                 "healthy": True,  # assume healthy until proven otherwise
                 "free_quota": p.get("free_quota", {}),
             }
             self.providers.append(provider)
-            logger.info(f"Loaded provider: {provider['name']} (priority={provider['priority']}, models={len(provider['models'])})")
+            logger.info(f"Loaded provider: {provider['name']} (priority={provider['priority']}, weight={provider['weight']}, models={len(provider['models'])})")
 
     def _rebuild_index(self):
         """Rebuild model -> providers mapping, sorted by priority"""
