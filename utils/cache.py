@@ -80,11 +80,6 @@ class CacheManager:
             **kwargs
         }
         
-        # Sort messages to ensure consistent hashing
-        if messages:
-            sorted_messages = sorted(messages, key=lambda x: json.dumps(x, sort_keys=True))
-            request_data["messages"] = sorted_messages
-        
         # Sort kwargs for consistent hashing
         sorted_kwargs = dict(sorted(kwargs.items()))
         request_data.update(sorted_kwargs)
