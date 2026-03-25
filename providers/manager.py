@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from typing import Dict, List, Optional
 import logging
 
@@ -13,6 +14,8 @@ class ProviderManager:
         # Build model -> providers index
         self._model_index: Dict[str, List[dict]] = {}
         self._rebuild_index()
+        # Initialize circuit breaker
+        self.circuit_breaker = CircuitBreaker()
 
     def _resolve_env_vars(self, value: str) -> str:
         """Resolve ${VAR_NAME} patterns from environment variables"""
@@ -87,6 +90,52 @@ class ProviderManager:
                 "healthy": p["healthy"],
                 "priority": p["priority"],
                 "models": p["models"],
+                "circuit": {
+                    "state": self.circuit_breaker.state.get(p["name"], "closed"),
+                    "failures": self.circuit_breaker.failure_count.get(p["name"], 0),
+                } if hasattr(self, 'circuit_breaker') else {"state": "closed", "failures": 0}
             }
             for p in self.providers
         }
+
+
+class CircuitBreaker:
+    """Per-provider circuit breaker"""
+    def __init__(self, failure_threshold=5, recovery_timeout=60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count: Dict[str, int] = {}
+        self.last_failure: Dict[str, float] = {}
+        self.state: Dict[str, str] = {}  # "closed", "open", "half_open"
+    
+    def record_failure(self, provider_name: str):
+        self.failure_count[provider_name] = self.failure_count.get(provider_name, 0) + 1
+        self.last_failure[provider_name] = time.time()
+        if self.failure_count[provider_name] >= self.failure_threshold:
+            self.state[provider_name] = "open"
+    
+    def record_success(self, provider_name: str):
+        self.failure_count[provider_name] = 0
+        self.state[provider_name] = "closed"
+    
+    def can_use(self, provider_name: str) -> bool:
+        state = self.state.get(provider_name, "closed")
+        if state == "closed":
+            return True
+        if state == "open":
+            last_fail = self.last_failure.get(provider_name, 0)
+            if time.time() - last_fail > self.recovery_timeout:
+                self.state[provider_name] = "half_open"
+                return True
+            return False
+        return True  # half_open
+    
+    def get_status(self) -> dict:
+        status = {}
+        for name in set(list(self.failure_count.keys()) + list(self.state.keys())):
+            status[name] = {
+                "state": self.state.get(name, "closed"),
+                "failures": self.failure_count.get(name, 0),
+                "last_failure": self.last_failure.get(name)
+            }
+        return status
