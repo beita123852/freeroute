@@ -130,5 +130,10 @@ cache:
   exclude_models: []         # 排除缓存的模型
   cleanup_interval: 3600     # 清理间隔（秒）
 
+discovery:
+  enabled: false  # 默认关闭，需要时启用
+  interval: 3600  # 扫描间隔（秒）
+  webhook_url: ""  # 飞书/其他 Webhook URL
+
 logging:
   level: "INFO"

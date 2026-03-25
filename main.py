@@ -299,6 +299,7 @@ async def status():
         "quota": qt.get_status(),
         "health": hc.get_status(),
         "cache": cache_manager.stats(),
+        "discovery": auto_discovery.get_status(),
     }
 
 
