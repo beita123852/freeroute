@@ -4,12 +4,13 @@ import yaml
 import json
 import asyncio
 import logging
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, Security, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -18,6 +19,7 @@ from typing import Optional
 from providers.manager import ProviderManager
 from utils.quota_tracker import QuotaTracker
 from utils.health_checker import HealthChecker
+from utils.cache import CacheManager
 from router import Router
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,10 @@ load_dotenv()
 
 config = load_config()
 
+# Global counters for dashboard
+start_time = time.time()
+total_requests = 0
+
 # ---------------------------------------------------------------------------
 # Init components
 # ---------------------------------------------------------------------------
@@ -81,7 +87,12 @@ hc = HealthChecker(
     interval=hc_config.get("interval", 60),
     timeout=hc_config.get("timeout", 10),
 )
-router = Router(pm, qt, hc, config)
+
+# Initialize cache
+cache_config = config.get("cache", {})
+cache_manager = CacheManager(cache_config)
+
+router = Router(pm, qt, hc, config, cache_manager)
 
 # ---------------------------------------------------------------------------
 # Background health checker
@@ -129,6 +140,8 @@ app.state.limiter = limiter
 @app.post("/v1/chat/completions")
 @limiter.limit("20/minute")
 async def chat_completions(request: Request, _ = Security(verify_token)):
+    global total_requests
+    
     body = await request.json()
     model = body.get("model", "")
     messages = body.get("messages", [])
@@ -184,6 +197,25 @@ async def chat_completions(request: Request, _ = Security(verify_token)):
         )
     else:
         result = await router.route_request(model, messages, **extra_kwargs)
+        total_requests += 1  # Increment request counter
+        
+        # Log the request
+        try:
+            client_ip = request.client.host if request.client else "unknown"
+            request_logger.log_request(
+                model=model,
+                provider=result.get("provider", "unknown"),
+                status="success" if result["success"] else "fail",
+                latency_ms=result.get("latency_ms"),
+                tokens_prompt=result.get("tokens_prompt", 0),
+                tokens_completion=result.get("tokens_completion", 0),
+                tokens_total=result.get("tokens_total", 0),
+                error_message=result.get("error") if not result["success"] else None,
+                client_ip=client_ip
+            )
+        except Exception as e:
+            logger.error(f"Failed to log request: {e}")
+        
         if result["success"]:
             return JSONResponse(content=result["data"])
         else:
@@ -223,7 +255,118 @@ async def status():
         "providers": pm.get_status(),
         "quota": qt.get_status(),
         "health": hc.get_status(),
+        "cache": cache_manager.stats(),
     }
+
+
+@app.get("/api/dashboard")
+async def api_dashboard():
+    """API endpoint for dashboard data"""
+    provider_status = []
+    health_status = hc.get_status()
+    quota_status = qt.get_status()
+    provider_status_info = pm.get_status()
+    
+    for provider_name in provider_status_info.keys():
+        provider_info = pm.get_provider(provider_name)
+        if provider_info:
+            provider_status.append({
+                "name": provider_name,
+                "healthy": health_status.get(provider_name, {}).get("healthy", False),
+                "latency_ms": health_status.get(provider_name, {}).get("latency_ms"),
+                "quota": {
+                    "used": quota_status.get(provider_name, {}).get("daily", 0),
+                    "limit": provider_info.get("free_quota", {}).get("limit", 0),
+                    "type": provider_info.get("free_quota", {}).get("type", "daily")
+                },
+                "models": provider_info.get("models", [])
+            })
+    
+    return {
+        "version": "0.2.0",
+        "uptime_seconds": round(time.time() - start_time),
+        "total_requests": total_requests,
+        "providers": provider_status,
+        "routing_strategy": config.get("routing", {}).get("strategy", "priority_fallback")
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Dashboard HTML page"""
+    html_content = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreeRoute Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-card: #16213e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0a0;
+            --success: #4ade80;
+            --danger: #f87171;
+            --warning: #fbbf24;
+            --info: #60a5fa;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        
+        .container {
+           极长内容已截断，请继续查看完整代码...
+
+
+@app.delete("/api/cache")
+async def clear_cache():
+    """Clear all cache entries"""
+    success = cache_manager.clear()
+    return {"success": success, "message": "Cache cleared" if success else "Failed to clear cache"}
+
+
+@app.get("/api/logs/recent")
+async def get_recent_logs(limit: int = 100):
+    """Get recent request logs"""
+    logs = request_logger.get_recent(limit)
+    return {
+        "count": len(logs),
+        "logs": logs
+    }
+
+
+@app.get("/api/logs/stats")
+async def get_log_stats(hours: int = 24):
+    """Get request statistics"""
+    stats = request_logger.get_stats(hours)
+    return stats
+
+
+@app.get("/api/logs/stats/provider")
+async def get_provider_stats(hours: int = 24):
+    """Get request statistics by provider"""
+    stats = request_logger.get_provider_stats(hours)
+    return stats
+
+
+@app.get("/api/logs/stats/model")
+async def get_model_stats(hours: int = 24):
+    """Get request statistics by model"""
+    stats = request_logger.get_model_stats(hours)
+    return stats
 
 
 # ---------------------------------------------------------------------------
