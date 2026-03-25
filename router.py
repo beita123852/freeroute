@@ -358,6 +358,9 @@ class Router:
                 # Mark unhealthy on connection error
                 if status_code == 0 and not result.get("is_timeout"):
                     self.pm.mark_unhealthy(provider["name"])
+                    # Record circuit breaker failure
+                    if hasattr(self.pm, 'circuit_breaker'):
+                        self.pm.circuit_breaker.record_failure(provider["name"])
                     break  # Don't retry unhealthy providers
 
                 # Check if retryable
@@ -385,6 +388,10 @@ class Router:
                     )
                     break
 
+        # Record circuit breaker failure
+        if hasattr(self.pm, 'circuit_breaker'):
+            self.pm.circuit_breaker.record_failure(provider["name"])
+        
         return self._error_response(
             f"All providers failed. Last error: {last_error.get('error', 'unknown')}"
         )
